@@ -1,0 +1,6 @@
+.DS_Store
+.temp/
+logs/
+.test/
+build/
+releases/
