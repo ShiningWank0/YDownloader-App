@@ -1,0 +1,422 @@
+name: Build and Release Installers
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"  # 念のためこちらも設定
+    permissions:
+      id-token: write
+      pages: write
+      contents: write
+    # 各 OS でビルドするためのマトリクス
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies for Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          echo "Installing Windows dependencies"
+          echo "Enabling Developer Mode"
+          reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /v AllowDevelopmentWithoutDevLicense /d 1 /f
+          echo "Run on Windows and installed dependencies for Windows"
+
+      - name: Install dependencies for macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          echo "Installing macOS dependencies"
+          brew install libjpeg libpng libtiff freetype
+          sudo softwareupdate --install-rosetta --agree-to-license
+          echo "Run on macOS and installed dependencies for macOS"
+
+      - name: Install dependencies for Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          echo "Installing Linux dependencies"
+          sudo apt-get update
+          sudo apt-get install -y libjpeg-dev libpng-dev libtiff-dev zlib1g-dev libfreetype6-dev
+          sudo apt install libgtk-3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+          sudo apt install libmpv-dev mpv
+          sudo apt-get install -y ninja-build g++ cmake clang
+          sudo apt-get install zenity
+          echo "Run on Linux and installed dependencies for Linux"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Extract version and FlutterSDK version from pyproject.toml on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $VERSION = python -c "import tomllib; f = open('pyproject.toml', 'rb'); config = tomllib.load(f); f.close(); print(config['project']['version'])"
+          echo "VERSION=$VERSION" >> $env:GITHUB_ENV
+          reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /v AllowDevelopmentWithoutDevLicense /d 1 /f
+          echo "Version extracted: $VERSION"
+          $FlutterSDK_VERSION = python -c "import tomllib; f = open('pyproject.toml', 'rb'); config = tomllib.load(f); f.close(); print(config['FlutterSDK']['version'])"
+          echo "FlutterSDK_VERSION=$FlutterSDK_VERSION" >> $env:GITHUB_ENV
+          echo "FlutterSDK_VERSION extracted: $FlutterSDK_VERSION"
+
+      - name: Extract version and FlutterSDK version from pyproject.toml on macOS or Linux
+        if: runner.os == 'macOS' || runner.os == 'Linux'
+        shell: bash
+        run: |
+          VERSION=$(python -c 'import tomllib; f = open("pyproject.toml", "rb"); config = tomllib.load(f); f.close(); print(config["project"]["version"])')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Version extracted: $VERSION"
+          FlutterSDK_VERSION=$(python -c 'import tomllib; f = open("pyproject.toml", "rb"); config = tomllib.load(f); f.close(); print(config["FlutterSDK"]["version"])')
+          echo "FlutterSDK_VERSION=$FlutterSDK_VERSION" >> $GITHUB_ENV
+          echo "FlutterSDK_VERSION extracted: $FlutterSDK_VERSION"
+
+      # Flutter SDK セットアップ versionはpyproject.tomlに記述
+      - name: Setup Flutter SDK
+        uses: flutter-actions/setup-flutter@v4
+        with:
+          channel: 'stable'
+          version: ${{ env.FlutterSDK_VERSION }}
+
+      - name: Determine OS for flet build
+        id: set-os
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            echo "os=windows" >> $GITHUB_OUTPUT
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            echo "os=macos" >> $GITHUB_OUTPUT
+          else
+            echo "os=linux" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create build directory if not exists
+        run: mkdir -p build/${{ steps.set-os.outputs.os }}
+
+      - name: Build executable with flet and show directory on Windows
+        if: runner.os == 'Windows'
+        run: |
+          $OutputEncoding = New-Object -typename System.Text.UTF8Encoding
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          flet build ${{ steps.set-os.outputs.os }} --output build/${{ steps.set-os.outputs.os }}
+          Write-Host "Displaying build directory."
+          if (Get-Command tree -ErrorAction SilentlyContinue) {
+            tree "build\${{ steps.set-os.outputs.os }}"
+          } else {
+            function Show-Tree {
+              param(
+                [string]$Path = ".",
+                [string]$Indent = ""
+              )
+              Get-ChildItem -Path $Path -Force | ForEach-Object {
+                Write-Host "$Indent|-- $($_.Name)"
+                if ($_.PSIsContainer) {
+                  Show-Tree -Path $_.FullName -Indent "$Indent    "
+                }
+              }
+            }
+            Show-Tree "build\${{ steps.set-os.outputs.os }}"
+          }
+
+      - name: Build executable with flet and show directory on macOS or Linux
+        if: runner.os == 'macOS' || runner.os == 'Linux'
+        run: |
+          flet build ${{ steps.set-os.outputs.os }} --output build/${{ steps.set-os.outputs.os }}
+          echo "Displaying build directory(bash):"
+          if command -v tree >/dev/null 2>&1; then
+            tree build/${{ steps.set-os.outputs.os }}
+          else
+            echo "tree command not found, using find command:"
+            find build/${{ steps.set-os.outputs.os }}
+          fi
+
+      # --- インストーラー作成 ---
+      # Windows 用（Inno Setup を利用）
+      - name: Create installer for Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Inno Setup のインストール（Chocolatey 経由）
+          choco install innosetup -y
+          # 環境変数からバージョンを変数に入れる(PowerShellでの変数展開問題を回避)
+          $VERSION = "${{ env.VERSION  }}"
+          # Inno Setup用スクリプトを作成（.iss）
+          # build 時の出力パスはここでは build\windows\YDownloader.exe
+          $installerScript = @"
+          #define MyVersion "$VERSION"
+
+          [Setup]
+          AppName=YDownloader
+          AppVersion={#MyVersion}
+          DefaultDirName={pf}\YDownloader
+          DefaultGroupName=YDownloader
+          OutputDir="."
+          OutputBaseFilename=YDownloader-{#MyVersion}-Installer
+          Compression=lzma
+          SolidCompression=yes
+
+          [Files]
+          ; EXEだけでなくフォルダー以下を再帰的にコピー
+          Source: "build\windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+          Source: "configs\*"; DestDir: "{localappdata}\YDownloader\configs"; Flags: recursesubdirs createallsubdirs
+          Source: "external\*"; DestDir: "{localappdata}\YDownloader\external"; Flags: recursesubdirs createallsubdirs
+          ; yt-dlp.exe は条件付きでインストールするため、[Files] には含めず後で [Run] 内で処理
+
+          [Files]
+          ; 一時的に展開して[Run]でコピーに利用する
+          Source: "external\yt_dlp\bin\yt-dlp.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+
+          [Icons]
+          Name: "{group}\YDownloader"; Filename: "{app}\YDownloader.exe"
+
+          [Code]
+          function YtDlpNotInstalled: Boolean;
+          var
+            ResultCode: Integer;
+          begin
+            if Exec('cmd.exe', '/c where yt-dlp', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+              Result := (ResultCode <> 0)
+            else
+              Result := True;
+          end;
+
+          [Run]
+          ; yt-dlp が PATH に存在しない場合、一時ファイルから所定のディレクトリへコピー
+          ; インストール後にyt-dlpフォルダがCドライブに存在することを確認
+          Filename: "{cmd}"; Parameters: "/c if not exist ""{drive:C}\yt-dlp"" mkdir ""{drive:C}\yt-dlp"" && copy /Y ""{tmp}\yt-dlp.exe"" ""{drive:C}\yt-dlp\yt-dlp.exe"""; Check: YtDlpNotInstalled; Flags: runhidden
+          "@
+          $installerScript | Out-File -FilePath installer.iss -Encoding UTF8
+          # Inno Setupコンパイラを使用してインストーラーをビルド
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      # macOS 用（pkg ビルダーを利用）
+      - name: Create installer for macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # 環境変数からバージョンを変数に入れる
+          VERSION="${{ env.VERSION }}"
+          # pkgbuild でインストーラー作成するための一時フォルダを用意
+          mkdir -p pkgroot/Applications
+          # flet build で作成された .app を Applications 配下へコピー
+          cp -R build/macos/YDownloader.app pkgroot/Applications/
+          # configs と external は macOS では ~/Library/Application Support 相当へインストールする例
+          mkdir -p pkgroot/Library/Application\ Support/YDownloader
+          cp -R configs pkgroot/Library/Application\ Support/YDownloader/
+          cp -R external pkgroot/Library/Application\ Support/YDownloader/
+          # postinstallスクリプトを作成(yt-dlpのダウンロードとセットアップ)
+          mkdir -p scripts
+          cat > scripts/postinstall <<EOF
+          #!/bin/bash
+          if ! command -v yt-dlp >/dev/null 2>&1; then
+            echo "yt-dlp not found, installing..."
+            # ユーザーの.local/binディレクトリを作成(存在しない場合)
+            mkdir -p ~/.local/bin
+            # yt-dlpの最新バージョンをダウンロード
+            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
+            # 実行権限を付与
+            chmod a+rx ~/.local/bin/yt-dlp
+            # PATHにディレクトリを追加(ユーザーのプロファイルに追記)
+            if [[ -f ~/.zshrc ]]; then
+              # zshが使用されている場合
+              grep -q "export PATH=\$PATH:~/.local/bin" ~/.zshrc || echo 'export PATH=$PATH:~/.local/bin' >> ~/.zshrc
+            elif [[ -f ~/.bash_profile ]]; then
+              # bash_profileが存在する場合
+              grep -q "export PATH=\$PATH:~/.local/bin" ~/.bash_profile || echo 'export PATH=$PATH:~/.local/bin' >> ~/.bash_profile
+            elif [[ -f ~/.bashrc ]]; then
+              # bashrcが存在する場合
+              grep -q "export PATH=\$PATH:~/.local/bin" ~/.bashrc || echo 'export PATH=$PATH:~/.local/bin' >> ~/.bashrc
+            fi
+          else
+            echo "yt-dlp already installed, skipping installation."
+          fi
+          echo "YDownloaderとyt-dlpのインストールが完了しました"
+          echo "ターミナルを再起動するか、source ~/.bashrc (または適切なプロファイル)を実行してPATHを更新してください"
+          exit 0
+          EOF
+          chmod +x scripts/postinstall
+          # ※ postinstall スクリプト等を追加すれば、より細かい処理も可能
+          pkgbuild --root pkgroot --scripts scripts --identifier com.ydownloader.app --version "${VERSION}" --install-location / YDownloader-${VERSION}-Installer.pkg
+
+      # Linux 用（tar.gz による簡易インストーラー例）
+      - name: Create installer for Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # 環境変数からバージョンを変数に入れる
+          VERSION="${{ env.VERSION }}"
+          mkdir -p installer/opt/YDownloader
+          cp -R build/linux/* installer/opt/YDownloader/
+          # Linux では、configs と external を /etc/ydownloader 等へ配置する例
+          mkdir -p installer/etc/ydownloader
+          cp -R configs installer/etc/ydownloader/
+          cp -R external installer/etc/ydownloader/
+          # インストール後のセットアップスクリプトを作成
+          mkdir -p installer/install-scripts
+          cat > installer/install-scripts/setup.sh <<EOF
+          #!/bin/bash
+          if ! command -v yt-dlp >/dev/null 2>&1; then
+            echo "yt-dlp not found, installing..."
+            # ユーザーの.local/binディレクトリを作成(存在しない場合)
+            mkdir -p ~/.local/bin
+            # yt-dlpの最新バージョンをダウンロード
+            curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp
+            # 実行権限を付与
+            chmod a+rx ~/.local/bin/yt-dlp
+            # PATHにディレクトリを追加(ユーザーのプロファイルに追記)
+            if [[ -f ~/.bashrc ]]; then
+              # bashrcが存在する場合
+              grep -q "export PATH=\$PATH:~/.local/bin" ~/.bashrc || echo 'export PATH=$PATH:~/.local/bin' >> ~/.bashrc
+            elif [[ -f ~/.profile ]]; then
+              # profileが存在する場合
+              grep -q "export PATH=\$PATH:~/.local/bin" ~/.profile || echo 'export PATH=$PATH:~/.local/bin' >> ~/.profile
+            elif [[ -f ~/.bash_profile ]]; then
+              # bash_profileが存在する場合
+              grep -q "export PATH=\$PATH:~/.local/bin" ~/.bash_profile || echo 'export PATH=$PATH:~/.local/bin' >> ~/.bash_profile
+            fi
+          else
+            echo "yt-dlp already installed, skipping installation."
+          fi
+          echo "YDownloaderとyt-dlpのインストールが完了しました"
+          echo "ターミナルを再起動するか、source ~/.bashrc (または適切なプロファイル)を実行してPATHを更新してください"
+          exit 0
+          EOF
+          chmod +x installer/install-scripts/setup.sh
+          # installer フォルダ以下を tar.gz 形式に圧縮
+          tar czvf YDownloader-${VERSION}-Installer.tar.gz -C installer .
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Installer-${{ steps.set-os.outputs.os }}-${{ env.VERSION }}
+          path: |
+            YDownloader-*-Installer.exe
+            YDownloader-*-Installer.pkg
+            YDownloader-*-Installer.tar.gz
+
+  # --- GitHub Pages 用サイトの自動生成 ---
+  publish:
+    needs: build
+    permissions:
+      id-token: write
+      pages: write
+      contents: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Extract version from pyproject.toml
+        id: get_version
+        run: |
+          VERSION=$(python -c 'import tomllib; f = open("pyproject.toml", "rb"); config = tomllib.load(f); f.close(); print(config["project"]["version"])')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Version extracted: $VERSION"
+
+      - name: Download all installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: installers
+
+      - name: Move installers to root directory
+        run: |
+          mkdir -p releases
+          find installers -type f -name "YDownloader-*" -exec cp {} releases/ \;
+
+      - name: Generate index.html for download site
+        run: |
+          mkdir -p gh-pages
+          # 各OSのインストーラーのファイル名を取得
+          WIN_FILE=$(find releases -maxdepth 1 -type f -name "*.exe" | head -n1)
+          LINUX_FILE=$(find releases -maxdepth 1 -type f -name "*.tar.gz" | head -n1)
+          MAC_FILE=$(find releases -maxdepth 1 -type f -name "*.pkg" | head -n1)
+          WIN_BASENAME=$(basename "$WIN_FILE")
+          LINUX_BASENAME=$(basename "$LINUX_FILE")
+          MAC_BASENAME=$(basename "$MAC_FILE")
+          cat > gh-pages/index.html << EOF
+          <!DOCTYPE html>
+          <html lang="ja">
+            <head>
+              <meta charset="utf-8">
+              <title>YDownloader Installers</title>
+              <style>
+                body { font-family: Arial, sans-serif; text-align: center; margin: 40px; }
+                .container { display: flex; justify-content: center; gap: 20px; }
+                .os-box { width: 300px; }
+                .os-box img { width: 150px; height: 150px; }
+                .os-box button { margin-top: 20px; padding: 10px 20px; font-size: 16px; cursor: pointer; }
+              </style>
+            </head>
+            <body>
+              <h1>YDownloader Installers</h1>
+              <div class="container">
+                <!-- Windows column -->
+                <div class="os-box">
+                  <img src="OS-Logos/Windows-11-Logo.png" alt="Windows Logo">
+                  <br>
+                  <a href="$WIN_BASENAME"><button>Download for Windows</button></a>
+                </div>
+                <!-- Linux column -->
+                <div class="os-box">
+                  <div class="os-box">
+                  <br>
+                  <a href="$LINUX_BASENAME"><button>Download for Linux</button></a>
+                </div>
+                <!-- macOS column -->
+                <div class="os-box">
+                  <img src="OS-Logos/macOS-Logo.png" alt="macOS Logo">
+                  <br>
+                  <a href="$MAC_BASENAME"><button>Download for macOS</button></a>
+                </div>
+              </div>
+            </body>
+          </html>
+          EOF
+
+      - name: Upload GitHub Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: gh-pages
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      # GitHub Pages の URL を表示
+      - name: Display GitHub Pages URL
+        run: |
+          echo "GitHub Pages URL: ${{ steps.deployment.outputs.page_url }}"
+
+      # GitHub Release の作成
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v${{ env.VERSION }}
+          release_name: Release ${{ env.VERSION }}
+          body: Installer build for version ${{ env.VERSION }} is available.
+          artifacts: releases/*
