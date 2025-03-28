@@ -1,0 +1,12 @@
+{
+    "retry_chance": 3,
+    "show_progress": true,
+    "content_type": "movie",
+    "movie_quality": "bestvideo[height<=2160]+bestaudio/best",
+    "movie_format": "mp4",
+    "music_quality": "bestaudio/best",
+    "music_format": "mp3",
+    "download_dir": false,
+    "temp_dir": false,
+    "page_theme": "LIGHT"
+}

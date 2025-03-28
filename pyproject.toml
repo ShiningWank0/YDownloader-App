@@ -1,0 +1,37 @@
+[project]
+name = "YDownloader"
+version = "0.0.1"
+description = "A GUI-based downloader using Flet, yt-dlp, and FFmpeg"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [
+    { name = "ShiningWank0" }
+]
+dependencies = [
+  "appdirs",
+  "flet==0.27.5",
+  "Pillow",
+  "pycryptodome"
+]
+
+[tool.flet]
+product = "YDownloader"
+copyright = "Copyright (C) 2025 by ShiningWank0"
+
+[tool.flet.flutter.dependencies]
+flet_video = "1.0.0"
+flet_audio = "2.0.0"
+
+[tool.flet.app]
+path = "src"
+
+[tool.flet.macos]
+build_arch = "arm64"
+entitlement."com.apple.security.files.user-selected.read-write" = true
+entitlement."com.apple.security.network.client" = true
+entitlement."com.apple.security.app-sandbox" = true
+entitlement."com.apple.security.files.downloads.read-write" = true
+
+[FlutterSDK]
+version = "3.27.4"
