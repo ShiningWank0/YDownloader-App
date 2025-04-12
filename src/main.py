@@ -18,32 +18,39 @@ import atexit
 import logging
 from logging.handlers import RotatingFileHandler
 import subprocess
-# externalディレクトリのパスを取得
-candidate = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "external")
-if os.path.isdir(candidate):
-    EXTERNAL_PATH = candidate
-else:
-    if sys.platform.startswith("win"):
-        # LOCALAPPDATA 環境変数が設定されている場合はこちらを利用
-        data_dir = os.getenv('LOCALAPPDATA', os.path.expanduser("~"))
-    elif sys.platform == "darwin":
-        data_dir = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
-    else: # Linux/Unix
-        data_dir = os.getenv('XDG_DATA_HOME', os.path.join(os.path.expanduser("~"), ".local", "share"))
-    EXTERNAL_PATH = os.path.join(data_dir, "YDownloader", "external")
-# external 以下の各ライブラリのパスをリスト化
-external_libs = ["appdirs", "PIL", "requests", "yt_dlp", "concurrent"]
-# 各ディレクトリを sys.path に追加
-for lib in external_libs:
-    lib_path = os.path.join(EXTERNAL_PATH, lib)
-    sys.path.insert(0, lib_path)
-# ここで external/ 内のモジュールが import 可能になる
-# 各ライブラリを import
-from yt_dlp import YoutubeDL
-import requests
-from PIL import Image
-from appdirs import user_data_dir, user_config_dir
-from concurrent.futures import ThreadPoolExecutor
+# # externalディレクトリのパスを取得
+# candidate = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "external")
+# if os.path.isdir(candidate):
+#     EXTERNAL_PATH = candidate
+# else:
+#     if sys.platform.startswith("win"):
+#         # LOCALAPPDATA 環境変数が設定されている場合はこちらを利用
+#         data_dir = os.getenv('LOCALAPPDATA', os.path.expanduser("~"))
+#     elif sys.platform == "darwin":
+#         data_dir = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+#     else: # Linux/Unix
+#         data_dir = os.getenv('XDG_DATA_HOME', os.path.join(os.path.expanduser("~"), ".local", "share"))
+#     EXTERNAL_PATH = os.path.join(data_dir, "YDownloader", "external")
+# # external 以下の各ライブラリのパスをリスト化
+# external_libs = ["appdirs", "PIL", "requests", "yt_dlp"]
+# # 各ディレクトリを sys.path に追加
+# for lib in external_libs:
+#     lib_path = os.path.join(EXTERNAL_PATH, lib)
+#     sys.path.insert(0, lib_path)
+# # ここで external/ 内のモジュールが import 可能になる
+# # 各ライブラリを import
+# from yt_dlp import YoutubeDL
+# import requests
+# from PIL import Image
+# from appdirs import user_data_dir, user_config_dir
+try:
+    from yt_dlp import YoutubeDL
+    import requests
+    from PIL import Image
+    from appdirs import user_data_dir, user_config_dir
+    from concurrent.futures import ThreadPoolExecutor
+except ImportError as e:
+    raise(f"必要なライブラリのインポートに失敗しました: {e}")
 
 
 """
