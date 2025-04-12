@@ -12,7 +12,7 @@ dependencies = [
   "appdirs",
   "flet==0.27.5",
   "Pillow",
-  "pycryptodome"
+  "pycryptodome",
 ]
 
 [tool.flet]
